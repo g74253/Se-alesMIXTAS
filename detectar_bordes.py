@@ -1,76 +1,167 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 
+# -----------------------------------------------------------------------------
+# Lógica de Procesamiento de Imágenes (Backend)
+# -----------------------------------------------------------------------------
 def detectar_bordes(ruta_imagen, umbral_min=100, umbral_max=200):
-    """
-    Carga una imagen, detecta sus bordes usando el algoritmo de Canny
-    y devuelve la imagen binarizada con los bordes.
-
-    Args:
-        ruta_imagen (str): La ruta al archivo de la imagen.
-        umbral_min (int): Umbral inferior para la detección de bordes de Canny.
-        umbral_max (int): Umbral superior para la detección de bordes de Canny.
-
-    Returns:
-        tuple: Una tupla conteniendo (imagen_original, imagen_bordes) o (None, None) si hay error.
-    """
-    # Cargar la imagen del disco
-    img = cv2.imread(ruta_imagen)
-
-    # Verificar si la imagen se cargó correctamente
-    if img is None:
-        print(f"Error: No se pudo cargar la imagen en la ruta: {ruta_imagen}")
+    """Carga una imagen y detecta sus bordes con el algoritmo de Canny."""
+    img_color = cv2.imread(ruta_imagen)
+    if img_color is None:
         return None, None
-
-    # Convertir la imagen a escala de grises para el procesamiento
-    img_gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Aplicar el detector de bordes de Canny
-    # Este algoritmo es bueno para encontrar contornos nítidos
+    img_gris = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
     bordes = cv2.Canny(img_gris, umbral_min, umbral_max)
+    return img_color, bordes
 
-    return img, bordes
+# --- Biblioteca de Mapeos ---
+def mapeo_lineal(puntos_z, a=1.5, b=0): return a * puntos_z + b
+def mapeo_cuadratico(puntos_z): return puntos_z ** 2
+def mapeo_inverso(puntos_z): return 1 / (puntos_z + 1e-8)
+def mapeo_exponencial(puntos_z): return np.exp(puntos_z) # Ya no se divide por 100
+def mapeo_bilineal(puntos_z, a=1, b=0, c=0, d=1):
+    denominador = c * puntos_z + d
+    denominador[np.abs(denominador) < 1e-8] = 1e-8
+    return (a * puntos_z + b) / denominador
 
-# --- Bloque principal para ejecutar el programa ---
-if __name__ == "__main__":
-    print("Iniciando el detector de bordes...")
+mapeos_disponibles = {
+    "Lineal": mapeo_lineal,
+    "Cuadrático": mapeo_cuadratico,
+    "Inverso": mapeo_inverso,
+    "Exponencial": mapeo_exponencial,
+    "Bilineal": mapeo_bilineal,
+}
 
-    # --- ¡IMPORTANTE! ---
-    # Cambia el nombre de archivo de abajo por el de tu imagen.
-    # Asegúrate de que la imagen esté en la misma carpeta que este script.
-    ruta_de_mi_imagen = 'Ace.jpg'
+# -----------------------------------------------------------------------------
+# Clase de la Aplicación con Tkinter (Frontend)
+# -----------------------------------------------------------------------------
+class MappingApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Art-Attack: Mapeos Complejos")
+        self.root.geometry("450x320")
 
-    # Llamar a la función para procesar la imagen
-    imagen_original, imagen_bordes = detectar_bordes(ruta_de_mi_imagen)
+        self.filepath = None
+        self.mapeo_seleccionado = tk.StringVar(value="Lineal")
 
-    # Si la imagen se procesó correctamente, mostrar los resultados
-    if imagen_original is not None and imagen_bordes is not None:
-        print("Procesamiento exitoso. Mostrando resultados...")
+        # --- Frame para selección de archivo ---
+        file_frame = ttk.LabelFrame(root, text="1. Seleccionar Imagen")
+        file_frame.pack(padx=10, pady=10, fill="x")
 
-        # Configurar la ventana de visualización con Matplotlib
-        plt.figure(figsize=(10, 5))
+        self.select_button = ttk.Button(file_frame, text="Abrir Imagen", command=self.abrir_archivo)
+        self.select_button.pack(side="left", padx=5, pady=5)
+        self.path_label = ttk.Label(file_frame, text="Ningún archivo seleccionado")
+        self.path_label.pack(side="left", padx=5)
 
-        # Subplot 1: Imagen Original
+        # --- Frame para selección de mapeo ---
+        map_frame = ttk.LabelFrame(root, text="2. Elegir Mapeo")
+        map_frame.pack(padx=10, pady=5, fill="x", expand=True)
+
+        for nombre_mapeo in mapeos_disponibles.keys():
+            rb = ttk.Radiobutton(map_frame, text=nombre_mapeo, variable=self.mapeo_seleccionado, value=nombre_mapeo)
+            rb.pack(anchor="w", padx=10)
+        
+        self.cascade_rb = ttk.Radiobutton(map_frame, text="Cascada (ej: Cuadrático,Inverso)", variable=self.mapeo_seleccionado, value="Cascada")
+        self.cascade_rb.pack(anchor="w", padx=10)
+        self.cascade_entry = ttk.Entry(map_frame)
+        self.cascade_entry.pack(fill="x", padx=25, pady=2)
+
+        # --- Botón para aplicar el mapeo ---
+        self.apply_button = ttk.Button(root, text="Aplicar Mapeo y Visualizar", command=self.aplicar_mapeo)
+        self.apply_button.pack(pady=10)
+
+    def abrir_archivo(self):
+        self.filepath = filedialog.askopenfilename(
+            title="Selecciona una imagen",
+            filetypes=(("Archivos de Imagen", "*.jpg *.jpeg *.png"), ("Todos los archivos", "*.*"))
+        )
+        if self.filepath:
+            self.path_label.config(text=self.filepath.split('/')[-1])
+
+    def aplicar_mapeo(self):
+        if not self.filepath:
+            messagebox.showerror("Error", "Por favor, selecciona una imagen primero.")
+            return
+
+        _, imagen_bordes = detectar_bordes(self.filepath)
+        if imagen_bordes is None:
+            messagebox.showerror("Error", "No se pudo cargar o procesar la imagen.")
+            return
+
+        filas, columnas = np.where(imagen_bordes > 0)
+        puntos_z = (columnas - imagen_bordes.shape[1] / 2) + 1j * (imagen_bordes.shape[0] / 2 - filas)
+        
+        # --- NORMALIZACIÓN DE COORDENADAS ---
+        # Se reescala la figura para que siempre esté en un rango de -1 a 1.
+        max_distancia = np.max(np.abs(puntos_z))
+        if max_distancia > 0:
+            puntos_z_normalizados = puntos_z / max_distancia
+        else:
+            puntos_z_normalizados = puntos_z
+        # --- FIN DE LA NORMALIZACIÓN ---
+        
+        puntos_transformados = None
+        titulo = ""
+        seleccion = self.mapeo_seleccionado.get()
+
+        try:
+            if seleccion in mapeos_disponibles:
+                puntos_a_mapear = puntos_z_normalizados
+                # Parámetros de ejemplo para la nueva escala normalizada
+                if seleccion == "Bilineal":
+                    puntos_transformados = mapeos_disponibles[seleccion](puntos_a_mapear, a=1, c=0.8, d=1)
+                else:
+                    puntos_transformados = mapeos_disponibles[seleccion](puntos_a_mapear)
+                titulo = f"Mapeo {seleccion}"
+            
+            elif seleccion == "Cascada":
+                secuencia_str = self.cascade_entry.get()
+                if not secuencia_str:
+                    messagebox.showerror("Error", "La secuencia de cascada no puede estar vacía.")
+                    return
+                
+                nombres_secuencia = [s.strip() for s in secuencia_str.split(',')]
+                puntos_actuales = puntos_z_normalizados.copy()
+                
+                for nombre in nombres_secuencia:
+                    if nombre in mapeos_disponibles:
+                        puntos_actuales = mapeos_disponibles[nombre](puntos_actuales)
+                    else:
+                        raise ValueError(f"Mapeo desconocido en la secuencia: '{nombre}'")
+                
+                puntos_transformados = puntos_actuales
+                titulo = "Cascada: " + " -> ".join(nombres_secuencia)
+
+            if puntos_transformados is not None:
+                self.mostrar_resultado(imagen_bordes, puntos_transformados, titulo)
+
+        except ValueError as e:
+            messagebox.showerror("Error de Secuencia", str(e))
+        except Exception as e:
+            messagebox.showerror("Error Inesperado", f"Ocurrió un error durante el mapeo: {e}")
+
+    def mostrar_resultado(self, bordes_originales, puntos_w, titulo):
+        plt.figure(figsize=(12, 6))
+        
         plt.subplot(1, 2, 1)
-        # Se convierte de BGR a RGB para que Matplotlib muestre los colores correctos
-        plt.imshow(cv2.cvtColor(imagen_original, cv2.COLOR_BGR2RGB))
-        plt.title('Imagen Original')
-        plt.xticks([]), plt.yticks([]) # Ocultar ejes
+        plt.imshow(bordes_originales, cmap='gray')
+        plt.title('Bordes Originales')
+        plt.axis('off')
 
-        # Subplot 2: Imagen de Bordes
         plt.subplot(1, 2, 2)
-        plt.imshow(imagen_bordes, cmap='gray')
-        plt.title('Bordes Detectados (Canny)')
-        plt.xticks([]), plt.yticks([]) # Ocultar ejes
-
-        # Mostrar la ventana
+        plt.scatter(puntos_w.real, puntos_w.imag, s=1, color='blue')
+        plt.title(titulo)
+        plt.xlabel('Eje Real (u)')
+        plt.ylabel('Eje Imaginario (v)')
+        plt.axis('equal')
+        
+        plt.tight_layout()
         plt.show()
 
-        # Opcional: Guardar la imagen de bordes en un nuevo archivo
-        # Extraer el nombre base para crear un nuevo nombre de archivo
-        nombre_base = ruta_de_mi_imagen.split('.')[0]
-        nombre_salida = f"bordes_{nombre_base}.png"
-
-        cv2.imwrite(nombre_salida, imagen_bordes)
-        print(f"Imagen de bordes guardada como: {nombre_salida}")
+# --- Punto de Entrada del Script ---
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MappingApp(root)
+    root.mainloop()
